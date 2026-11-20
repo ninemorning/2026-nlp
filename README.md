@@ -1,127 +1,58 @@
-# Project 1. Seq2Seq Num2Text
+# 2026-2 자연어처리
 
-Natural Language Processing (2026-2) — Project 1
+## Project 1. Seq2Seq Num2Text
 
-A Seq2Seq (GRU encoder-decoder) translator that reads numbers between three representations:
-**digits**, **English words**, and **Korean (hangul)**. One model is trained for each of the six directions.
+숫자, 영어, 한글 사이의 "숫자 읽기"를 번역하는 GRU 기반 Seq2Seq 모델입니다.
+6개 방향(num↔en, num↔ko, en↔ko)에 대해 각각 모델을 학습했습니다.
 
-| Direction | Example |
+### 파일 구성
+| 파일 | 설명 |
 |---|---|
-| num → en | `12345` → `twelve thousand three hundred forty five` |
-| en → num | `twelve thousand three hundred forty five` → `12345` |
-| num → ko | `12345` → `만 이천삼백사십오` |
-| ko → num | `만 이천삼백사십오` → `12345` |
-| en → ko | `twelve thousand three hundred forty five` → `만 이천삼백사십오` |
-| ko → en | `만 이천삼백사십오` → `twelve thousand three hundred forty five` |
+| `project01/num2text.ipynb` | 전체 코드 (데이터 처리, 모델, 학습, 평가, 테스트) |
+| `project01/num2text_models.pt` | 학습된 6개 방향 모델 + 어휘 사전 |
+| `project01/num2txt.txt` | 숫자 ↔ 영어 데이터 (10만 개) |
+| `project01/num2kor.txt` | 숫자 ↔ 한글 데이터 (10만 개) |
 
-Digits are always handled as **strings** (never converted to `int`).
+### 데이터 처리
+- 토큰화: 숫자와 한글은 글자 단위, 영어는 단어 단위
+- 숫자는 정수(int)가 아닌 문자열로 처리
+- 영어 ↔ 한글 데이터: 두 파일에 공통으로 있는 숫자 12,738개로 구성
+- train / val / test = 8 : 1 : 1
+- 오버샘플링: 학습 데이터에서 3자리 이하 숫자와 0이 4개 이상인 숫자를 10배로 늘림
 
-## Files
+### 모델
+- Encoder: Embedding + 2-layer GRU
+- Decoder: Embedding + 2-layer GRU + Linear
+- Attention (선택): Luong 방식 (general score)
+- 디코딩: Greedy decoding
+- 학습: Adam (lr=1e-3), teacher forcing 0.5, gradient clipping 1.0
+- val loss가 가장 낮은 epoch의 모델을 저장
 
-| File | Description |
-|---|---|
-| `project01/num2text.ipynb` | All code: data loading, vocabularies, model, training, evaluation, and the final load-and-test cell (with outputs kept) |
-| `project01/num2text_models.pt` | Saved PyTorch checkpoint containing the config, the three vocabularies, and the weights of all six models |
-| `project01/num2txt.txt` | Number ↔ English data (`number<TAB>english`, 100,000 lines) |
-| `project01/num2kor.txt` | Number ↔ Korean data (`number<TAB>hangul`, 100,000 lines) |
+### 모델 선택
+각 방향마다 Attention 없는 모델(base)과 Attention 모델(attn)을 모두 학습하고,
+**validation 정확도**가 더 높은 모델을 최종 모델로 선택했습니다.
 
-## Data
+### 결과 (문장 단위 완전 일치 정확도)
+| 방향 | base val | base test | attn val | attn test | 선택 |
+|---|---|---|---|---|---|
+| num → en | 99.90% | 99.88% | 99.33% | 99.23% | base |
+| en → num | 99.90% | 99.96% | 99.91% | 99.95% | attn |
+| num → ko | 99.82% | 99.77% | 99.92% | 99.92% | attn |
+| ko → num | 99.97% | 99.96% | 100.00% | 99.97% | attn |
+| en → ko | 99.76% | 99.45% | 99.61% | 99.53% | base |
+| ko → en | 99.61% | 99.45% | 99.69% | 99.61% | attn |
 
-- `num2txt.txt` and `num2kor.txt`, 100,000 pairs each, numbers from 0 up to 10 digits.
-- English uses singular units (`thousand`, `million`, `billion`).
-- Korean follows the format of the provided (revised) data: a space after each `억` / `만`
-  group, and `일` is omitted before a unit (`만 이천삼백사십오`, not `일만이천삼백사십오`).
-- The two files contain different random numbers; only **12,738** numbers appear in both,
-  so the en ↔ ko pairs are built from that intersection.
+### 한계
+- 1000001처럼 중간에 0이 많이 연속되는 숫자는 학습 데이터에 거의 없어서 틀리는 경우가 있습니다.
 
-### Split
-
-Each direction is split 80 / 10 / 10 (train / val / test) with `random.seed(42)`.
-The split is done independently per language pair, so **each direction has its own model**
-(models are not shared across directions, which avoids test/train leakage between them).
-
-| Pair | Train | Val | Test |
-|---|---|---|---|
-| num ↔ en | 80,000 | 10,000 | 10,000 |
-| num ↔ ko | 80,000 | 10,000 | 10,000 |
-| en ↔ ko | 10,190 | 1,273 | 1,275 |
-
-## Method
-
-**Tokenization**
-
-- Numbers: one token per digit character.
-- English: one token per word (split on spaces), 32 word types.
-- Korean: one token per character, including the space (16 character types).
-- Special tokens: `<pad>`=0, `<sos>`=1, `<eos>`=2, `<unk>`=3.
-
-**Model** (Seq2Seq with GRU)
-
-- Encoder: embedding (128) → 2-layer GRU (hidden 256, dropout 0.2); variable-length
-  inputs are handled with `pack_padded_sequence`.
-- Decoder: embedding (128) → 2-layer GRU (hidden 256, dropout 0.2) → linear layer over the target vocabulary.
-  The encoder's final hidden state initializes the decoder.
-- Decoding: **greedy decoding** (max length 30).
-
-**Training**
-
-- Loss: cross-entropy (padding ignored); optimizer: Adam, lr = 1e-3; batch size 128;
-  gradient clipping at 1.0.
-- Teacher forcing ratio 0.5 during training, 0 during validation / test.
-- Reproducibility: the data split uses a fixed seed (`random.seed(42)`), but the PyTorch
-  initialization seed is not fixed, so retraining can give slightly different accuracies.
-- Epochs: 10 for the four num ↔ en / num ↔ ko directions, 30 for en ↔ ko
-  (much less data).
-
-## Results
-
-Exact-match accuracy on the held-out test split (the whole output sequence must match).
-
-| Direction | Test accuracy |
-|---|---|
-| num → en | 99.68 % (9968 / 10000) |
-| en → num | 99.93 % (9993 / 10000) |
-| num → ko | 99.77 % (9977 / 10000) |
-| ko → num | 98.91 % (9891 / 10000) |
-| en → ko | 99.37 % (1267 / 1275) |
-| ko → en | 99.22 % (1265 / 1275) |
-
-Typical errors are in the middle digits of long numbers (8–10 digits), e.g. swapping or
-dropping a group such as `forty eight thousand` ↔ `forty four thousand`, or mis-handling
-numbers with several zeros.
-
-## How to use
-
-The last cell of `num2text.ipynb` loads `num2text_models.pt` and runs the test code.
-It defines its own copy of the vocabulary and model classes, so it can be run on its own
-after a kernel restart (it only needs `num2text_models.pt` in the same directory).
+### 사용 방법
+`num2text.ipynb`의 마지막 셀만 실행하면 저장된 모델을 불러와 테스트할 수 있습니다. (학습 셀 실행 불필요)
 
 ```python
-# last cell of num2text.ipynb
-num2en("12345")                                    # 'twelve thousand three hundred forty five'
-en2num("twelve thousand three hundred forty five") # '12345'
-num2ko("12345")                                    # '만 이천삼백사십오'
-ko2num("만 이천삼백사십오")                          # '12345'
-en2ko("twelve thousand three hundred forty five")  # '만 이천삼백사십오'
-ko2en("만 이천삼백사십오")                           # 'twelve thousand three hundred forty five'
+num2en("12345")              # twelve thousand three hundred forty five
+en2num("twelve thousand three hundred forty five")
+num2ko("12345")              # 만 이천삼백사십오
+ko2num("만 이천삼백사십오")
+en2ko("twelve thousand three hundred forty five")
+ko2en("만 이천삼백사십오")
 ```
-
-Notes:
-
-- Pass digits as a **string** (`"12345"`, not `12345`).
-- English input uses singular units and single spaces between words.
-- Korean input follows the data format (space after `억` / `만`).
-- Numbers up to 10 digits are supported; longer numbers were not seen during training.
-
-Run the notebook from the `project01` directory so that the data files and the checkpoint are found.
-To retrain from scratch, run the notebook from top to bottom (a CUDA GPU is recommended,
-CPU also works but is much slower).
-
-## Environment
-
-- Python 3.12, PyTorch 2.x (developed with 2.11.0 + CUDA 12.8 on an NVIDIA RTX GPU), NumPy.
-
-## Team
-
-- Team leader: `<GitHub ID>`
-- Members: `<names>`
